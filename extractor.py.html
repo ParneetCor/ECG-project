@@ -1,0 +1,364 @@
+<html>
+<head>
+<title>extractor.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #080808;}
+.s1 { color: #0033b3;}
+.s2 { color: #8c8c8c; font-style: italic;}
+.s3 { color: #1750eb;}
+.s4 { color: #008080; font-weight: bold;}
+</style>
+</head>
+<body bgcolor="#ffffff">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#c0c0c0" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+extractor.py</font>
+</center></td></tr></table>
+<pre>
+<span class="s1">from </span><span class="s0">ecgdetectors </span><span class="s1">import </span><span class="s0">Detectors</span>
+<span class="s1">from </span><span class="s0">hrv </span><span class="s1">import </span><span class="s0">HRV</span>
+<span class="s2">#sudo apt-get install python-scipy</span>
+<span class="s2">#hrv is a simple Python module that brings the most widely used techniques to work with RRi series and Heart Rate Variability (HRV) analyses without losing the Power and Flexibility of a native Python object and numpy arrays.</span>
+<span class="s1">import </span><span class="s0">pywt</span>
+<span class="s1">import </span><span class="s0">numpy </span><span class="s1">as </span><span class="s0">np</span>
+<span class="s1">import </span><span class="s0">scipy</span>
+
+<span class="s1">class </span><span class="s0">RR_intervals:</span>
+    <span class="s1">def </span><span class="s0">__init__(self):</span>
+        <span class="s2"># Instance atributes</span>
+        <span class="s0">self.pre_R = np.array([])</span>
+        <span class="s0">self.post_R = np.array([])</span>
+        <span class="s0">self.local_R = np.array([])</span>
+        <span class="s0">self.global_R = np.array([])</span>
+
+<span class="s1">class </span><span class="s0">Extractor:</span>
+
+    <span class="s1">def </span><span class="s0">__init__(self, fs=</span><span class="s3">500</span><span class="s0">):</span>
+        <span class="s0">self.hrv_obj = HRV(fs)</span>
+        <span class="s0">self.detector = Detectors(fs)</span>
+    
+
+
+    <span class="s2">#-------------------------call this function to get the features----------------------------</span>
+    <span class="s1">def </span><span class="s0">get_features(self, signal, neigh=</span><span class="s3">8</span><span class="s0">, level=</span><span class="s3">3</span><span class="s0">, wname=</span><span class="s4">'db1'</span><span class="s0">, fs=</span><span class="s3">500</span><span class="s0">, win_left=</span><span class="s3">90</span><span class="s0">, win_right=</span><span class="s3">90</span><span class="s0">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parameters: 
+        signal : shape is (length_of_signal), A single lead ecg signal 
+        fs : sampling frequency of the signal 
+        win_left : size of window to the left of r-peak 
+        win_right : size of window to the right of r-peak 
+        level : The level of wavelet transform 
+        wname : The name of wavelet transform to use 
+         
+        Returns: 
+        All the featues as a tuple 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">r_peaks = self.get_r_peaks(signal)</span>
+        <span class="s0">mean_rr, sd_rr, nn_50, pnn_50 = self.get_rr_features(r_peaks)</span>
+        <span class="s0">mean_hr, sd_hr, max_hr, min_hr = self.get_hr_features(signal, r_peaks)</span>
+
+        <span class="s0">beats = self.signal_to_beats(signal, win_left, win_right)</span>
+        <span class="s0">wavelet_data = self.wavelet_transform(beats, level, wname)</span>
+        <span class="s0">lbp_data = self.lbp_beats(beats)</span>
+        <span class="s0">hos_data = self.HOS(beats, win_left=</span><span class="s3">90</span><span class="s0">, win_right=</span><span class="s3">90</span><span class="s0">, n_intervals=</span><span class="s3">6</span><span class="s0">)</span>
+        <span class="s0">RR_data = self.compute_RR_intervals(r_peaks)</span>
+
+        <span class="s1">return </span><span class="s0">mean_rr, sd_rr, nn_50, pnn_50, mean_hr, sd_hr, max_hr, min_hr, RR_data.pre_R, RR_data.post_R, RR_data.local_R, RR_data.global_R, wavelet_data, lbp_data, hos_data</span>
+
+    <span class="s1">def </span><span class="s0">get_r_peaks(self, data):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parameters: 
+        data : shape is (length_of_signal), A single lead ecg signal 
+         
+        Returns: 
+        array : returns the 1-D coordinates of R peaks 
+        &quot;&quot;&quot;</span>
+        <span class="s2">#print(data.shape)</span>
+        <span class="s0">r_peaks = self.detector.christov_detector(data)</span>
+        <span class="s2">#print('hello')</span>
+        <span class="s2">#print(r_peaks.shape)</span>
+        <span class="s1">return </span><span class="s0">r_peaks</span>
+
+    <span class="s1">def </span><span class="s0">get_rr_features(self, r_peaks):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parameters: 
+        r_peaks : list of coordinates of RR preaks for each signal 
+        (number_of_rr_peaks) 
+        Returns: 
+        Mean and SD of RR interval, nn50 and pnn50 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">diff = np.abs(np.array(r_peaks[</span><span class="s3">1</span><span class="s0">:]) - np.array(r_peaks[:-</span><span class="s3">1</span><span class="s0">]))</span>
+
+        <span class="s0">mean_rr = np.mean(diff)</span>
+        <span class="s0">sd_rr = self.hrv_obj.SDNN(r_peaks)</span>
+        <span class="s0">nn_50 = self.hrv_obj.NN50(r_peaks)</span>
+        <span class="s0">pnn_50 = self.hrv_obj.pNN50(r_peaks)</span>
+
+        <span class="s1">return </span><span class="s0">mean_rr, sd_rr, nn_50, pnn_50</span>
+
+
+
+    <span class="s1">def </span><span class="s0">get_hr_features(self, data, r_peaks):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parameters: 
+        data : shape is (length_of_signal), A single lead ecg signal 
+        r_peaks : list of coordinates of RR preaks for each signal 
+        (number_of_rr_peaks) 
+         
+        Returns: 
+        Mean, SD, Minimum, Maximum of heart rate for each signal 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">bpm = self.hrv_obj.HR(r_peaks)</span>
+        <span class="s0">mean_hr = np.mean(bpm)</span>
+        <span class="s0">sd_hr = np.std(bpm)</span>
+        <span class="s0">max_hr = np.max(bpm)</span>
+        <span class="s0">min_hr = np.min(bpm)</span>
+        
+        <span class="s1">return </span><span class="s0">mean_hr, sd_hr, max_hr, min_hr</span>
+
+    <span class="s2">#-------------------------Beats extraction ----------------------------</span>
+    <span class="s1">def </span><span class="s0">signal_to_beats(self, signal, win_left, win_right):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parameters: 
+        signal : shape is (length_of_signal), A single lead ecg signal 
+        win_left : size of window to the left of r-peak 
+        win_right : size of window to the right of r-peak 
+         
+        Returns: 
+        beats : A 2D array. Each row is a beat of size win_left + win_right data  points with an r_peak at center 
+        &quot;&quot;&quot;</span>
+        <span class="s0">r_peaks = self.detector.christov_detector(signal)</span>
+
+        <span class="s2"># beats - each row is beat of size win_left + win_right</span>
+        <span class="s0">beats = np.empty(( len(r_peaks)-</span><span class="s3">2</span><span class="s0">, win_left + win_right), dtype=np.object) </span><span class="s2"># -2 because we are leaving first nad lst r_peak it might be incomplete</span>
+
+        <span class="s0">j=</span><span class="s3">1 </span><span class="s2"># Skipping the first r_peak</span>
+        <span class="s1">for </span><span class="s0">i </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">0</span><span class="s0">, len(beats)):</span>
+            <span class="s0">left = r_peaks[j] - win_left</span>
+            <span class="s0">right = r_peaks[j] + win_right</span>
+            <span class="s0">beats[i, :] = signal[left:right]</span>
+            <span class="s0">j = j + </span><span class="s3">1</span>
+        
+        <span class="s1">return </span><span class="s0">beats</span>
+    
+    <span class="s2">#-------------------------wavelet transformation ----------------------------</span>
+    <span class="s1">def </span><span class="s0">wavelet_transform(self, beats, level=</span><span class="s3">3</span><span class="s0">, wname=</span><span class="s4">'db1'</span><span class="s0">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parameters: 
+        beats : It is the array of beats. One signal broken down into beats 
+        level : The level of wavelet transform 
+        wname : The name of wavelet transform to use 
+ 
+        Returns: 
+        The wavelet coefficients averaged for all beats 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">wavelet = pywt.Wavelet(wname)</span>
+
+        <span class="s0">coeffs = pywt.wavedec(beats[</span><span class="s3">0</span><span class="s0">, :],  wavelet, level=level)</span>
+        <span class="s0">n = coeffs[</span><span class="s3">0</span><span class="s0">].shape[</span><span class="s3">0</span><span class="s0">]</span>
+        <span class="s0">m = beats.shape[</span><span class="s3">0</span><span class="s0">]</span>
+
+        <span class="s2"># placeholder for wavelet data</span>
+        <span class="s0">wavelet_data = np.empty((m,n), dtype=np.object)</span>
+        <span class="s1">for </span><span class="s0">i </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">0</span><span class="s0">, m):</span>
+            <span class="s0">coeffs = pywt.wavedec(beats[i, :], wavelet, level=level)</span>
+            <span class="s0">wavelet_data[i,:] = coeffs[</span><span class="s3">0</span><span class="s0">]</span>
+
+        <span class="s1">return </span><span class="s0">np.mean(wavelet_data, axis=</span><span class="s3">0</span><span class="s0">)</span>
+    
+    
+    <span class="s2">#-------------------------LBP single beat ----------------------------</span>
+    <span class="s0">@staticmethod</span>
+    <span class="s1">def </span><span class="s0">compute_Uniform_LBP(beat, neighbors=</span><span class="s3">8</span><span class="s0">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parameters: 
+        beat : One beat of a signal, r_peak at the center 
+         
+        Returns: 
+        Local binary pattern ids for one beat 
+        &quot;&quot;&quot;</span>
+        
+        <span class="s0">uniform_pattern_list = np.array(</span>
+            <span class="s0">[</span><span class="s3">0</span><span class="s0">, </span><span class="s3">1</span><span class="s0">, </span><span class="s3">2</span><span class="s0">, </span><span class="s3">3</span><span class="s0">, </span><span class="s3">4</span><span class="s0">, </span><span class="s3">6</span><span class="s0">, </span><span class="s3">7</span><span class="s0">, </span><span class="s3">8</span><span class="s0">, </span><span class="s3">12</span><span class="s0">, </span><span class="s3">14</span><span class="s0">, </span><span class="s3">15</span><span class="s0">, </span><span class="s3">16</span><span class="s0">, </span><span class="s3">24</span><span class="s0">, </span><span class="s3">28</span><span class="s0">, </span><span class="s3">30</span><span class="s0">, </span><span class="s3">31</span><span class="s0">, </span><span class="s3">32</span><span class="s0">, </span><span class="s3">48</span><span class="s0">, </span><span class="s3">56</span><span class="s0">, </span><span class="s3">60</span><span class="s0">, </span><span class="s3">62</span><span class="s0">, </span><span class="s3">63</span><span class="s0">, </span><span class="s3">64</span><span class="s0">, </span><span class="s3">96</span><span class="s0">, </span><span class="s3">112</span><span class="s0">, </span><span class="s3">120</span><span class="s0">, </span><span class="s3">124</span><span class="s0">, </span><span class="s3">126</span><span class="s0">,</span>
+            <span class="s3">127</span><span class="s0">, </span><span class="s3">128</span><span class="s0">,</span>
+            <span class="s3">129</span><span class="s0">, </span><span class="s3">131</span><span class="s0">, </span><span class="s3">135</span><span class="s0">, </span><span class="s3">143</span><span class="s0">, </span><span class="s3">159</span><span class="s0">, </span><span class="s3">191</span><span class="s0">, </span><span class="s3">192</span><span class="s0">, </span><span class="s3">193</span><span class="s0">, </span><span class="s3">195</span><span class="s0">, </span><span class="s3">199</span><span class="s0">, </span><span class="s3">207</span><span class="s0">, </span><span class="s3">223</span><span class="s0">, </span><span class="s3">224</span><span class="s0">, </span><span class="s3">225</span><span class="s0">, </span><span class="s3">227</span><span class="s0">, </span><span class="s3">231</span><span class="s0">, </span><span class="s3">239</span><span class="s0">, </span><span class="s3">240</span><span class="s0">, </span><span class="s3">241</span><span class="s0">, </span><span class="s3">243</span><span class="s0">, </span><span class="s3">247</span><span class="s0">, </span><span class="s3">248</span><span class="s0">,</span>
+            <span class="s3">249</span><span class="s0">, </span><span class="s3">251</span><span class="s0">, </span><span class="s3">252</span><span class="s0">, </span><span class="s3">253</span><span class="s0">, </span><span class="s3">254</span><span class="s0">, </span><span class="s3">255</span><span class="s0">]</span>
+        <span class="s0">)</span>
+
+
+        <span class="s0">hist_u_lbp = np.zeros(</span><span class="s3">59</span><span class="s0">)</span>
+
+        <span class="s0">avg_win_size = </span><span class="s3">2</span>
+        <span class="s0">inter = neighbors//</span><span class="s3">2</span>
+
+        <span class="s1">for </span><span class="s0">i </span><span class="s1">in  </span><span class="s0">list(range(-inter, </span><span class="s3">0</span><span class="s0">)) + list(range(</span><span class="s3">1</span><span class="s0">, (inter+</span><span class="s3">1</span><span class="s0">))):</span>
+            <span class="s0">pattern = np.zeros(neighbors)</span>
+            <span class="s0">ind = </span><span class="s3">0</span>
+            <span class="s1">for </span><span class="s0">n </span><span class="s1">in </span><span class="s0">list(range(-inter, </span><span class="s3">0</span><span class="s0">)) + list(range(</span><span class="s3">1</span><span class="s0">, inter+ </span><span class="s3">1</span><span class="s0">)):</span>
+                <span class="s1">if </span><span class="s0">beat[i] &gt; beat[i+n]:</span>
+                        <span class="s0">pattern[ind] = </span><span class="s3">1</span>
+                        <span class="s0">ind += </span><span class="s3">1</span>
+
+            <span class="s2"># Convert pattern to id-int 0-255 (for neighbors == 8)</span>
+            <span class="s0">pattern_id = int(</span><span class="s4">&quot;&quot;</span><span class="s0">.join(str(c) </span><span class="s1">for </span><span class="s0">c </span><span class="s1">in </span><span class="s0">pattern.astype(int)), </span><span class="s3">2</span><span class="s0">)</span>
+
+            <span class="s2"># Convert id to uniform LBP id 0-57 (uniform LBP)  58: (non uniform LBP)</span>
+            <span class="s1">if </span><span class="s0">pattern_id </span><span class="s1">in </span><span class="s0">uniform_pattern_list:</span>
+                <span class="s0">pattern_uniform_id = int(np.argwhere(uniform_pattern_list == pattern_id))</span>
+            <span class="s1">else</span><span class="s0">:</span>
+                <span class="s0">pattern_uniform_id = </span><span class="s3">58 </span><span class="s2"># Non uniforms patterns use</span>
+
+            <span class="s0">hist_u_lbp[pattern_uniform_id] += </span><span class="s3">1.0</span>
+
+        <span class="s1">return </span><span class="s0">hist_u_lbp</span>
+
+
+    <span class="s2">#-------------------------LBP full signal -------------------</span>
+    <span class="s1">def </span><span class="s0">lbp_beats(self, beats):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parameters: 
+        beats : It is the array of beats. One signal broken down into beats 
+         
+        Returns: 
+        lbp_data : LBP averaged over all beats 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">m = beats.shape[</span><span class="s3">0</span><span class="s0">]</span>
+        <span class="s0">n = </span><span class="s3">59 </span><span class="s2"># lbp gives 59 values</span>
+
+        <span class="s2"># array to store LBP  data</span>
+        <span class="s0">lbp_data = np.empty((m, n), dtype=np.object)</span>
+        <span class="s1">for </span><span class="s0">i </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">0</span><span class="s0">, m):</span>
+            <span class="s0">lbp_data[i,:] = self.compute_Uniform_LBP(beats[i,:], neighbors=</span><span class="s3">8</span><span class="s0">)</span>
+
+        <span class="s1">return </span><span class="s0">np.mean(lbp_data, axis=</span><span class="s3">0</span><span class="s0">)</span>
+    
+
+    <span class="s2">#-------------------------HOS ----------------------------</span>
+    <span class="s1">def </span><span class="s0">HOS(self, beats, win_left, win_right, n_intervals=</span><span class="s3">6</span><span class="s0">):</span>
+        <span class="s2">&quot;&quot;&quot; 
+        Parameters: 
+        beats : It is the array of beats. One signal broken down into beats 
+         
+        Returns: 
+        hos_data : HOS values averaged over all beats 
+        &quot;&quot;&quot;</span>
+
+        <span class="s0">lag = round((win_left + win_right) // n_intervals)</span>
+
+        <span class="s0">m, n = beats.shape</span>
+        <span class="s2">#hos gives 10 features for one beat</span>
+        <span class="s0">hos_data = np.empty((m, </span><span class="s3">10</span><span class="s0">), dtype=np.object)</span>
+        <span class="s1">for </span><span class="s0">j </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">0</span><span class="s0">,m): </span><span class="s2"># For each beat</span>
+            <span class="s0">hos_b = np.zeros(((n_intervals - </span><span class="s3">1</span><span class="s0">) * </span><span class="s3">2</span><span class="s0">))</span>
+            <span class="s1">for </span><span class="s0">i </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">0</span><span class="s0">, n_intervals - </span><span class="s3">1</span><span class="s0">):</span>
+                <span class="s0">pose = (lag * (i + </span><span class="s3">1</span><span class="s0">))</span>
+                <span class="s0">interval = beats[j,:][(pose - (lag // </span><span class="s3">2</span><span class="s0">)):(pose + (lag // </span><span class="s3">2</span><span class="s0">))]</span>
+                <span class="s2"># Skewness</span>
+                <span class="s0">hos_b[i] = scipy.stats.skew(interval, </span><span class="s3">0</span><span class="s0">, </span><span class="s1">True</span><span class="s0">)</span>
+                <span class="s2"># Kurtosis</span>
+                <span class="s0">hos_b[</span><span class="s3">5 </span><span class="s0">+ i] = scipy.stats.kurtosis(interval, </span><span class="s3">0</span><span class="s0">, </span><span class="s1">False</span><span class="s0">, </span><span class="s1">True</span><span class="s0">)</span>
+
+            <span class="s0">hos_data[j,:]=hos_b</span>
+
+        <span class="s1">return </span><span class="s0">np.mean(hos_data, axis=</span><span class="s3">0</span><span class="s0">)</span>
+    
+    <span class="s2">#def to_categorical(self, y, num_classes=None, dtype='float32'):</span>
+        <span class="s4">&quot;&quot;&quot; 
+        Arguments: 
+        y: class vector to be converted into a matrix 
+              (integers from 0 to num_classes). 
+        num_classes: total number of classes. If `None`, this would be inferred 
+                    as the (largest number in `y`) + 1. 
+        dtype: The data type expected by the input. Default: `'float32'`. 
+         
+        Returns: 
+            A binary matrix representation of the input. The classes axis is placed 
+            last. 
+      &quot;&quot;&quot;</span>
+        <span class="s2">#y = np.array(y, dtype='int')</span>
+        <span class="s2">#input_shape = y.shape</span>
+        <span class="s2">#if input_shape and input_shape[-1] == 1 and len(input_shape) &gt; 1:</span>
+         <span class="s2">#   input_shape = tuple(input_shape[:-1])</span>
+        <span class="s2">#y = y.ravel()</span>
+        <span class="s2">#if not num_classes:</span>
+         <span class="s2">#   num_classes = np.max(y) + 1</span>
+        <span class="s2">#n = y.shape[0]</span>
+        <span class="s2">#categorical = np.zeros((n, num_classes), dtype=dtype)</span>
+        <span class="s2">#categorical[np.arange(n), y] = 1</span>
+        <span class="s2">#output_shape = input_shape + (num_classes,)</span>
+        <span class="s2">#categorical = np.reshape(categorical, output_shape)</span>
+        <span class="s2">#return categorical</span>
+<span class="s2">#new features added</span>
+    <span class="s2"># Input: the R-peaks from a signal</span>
+    <span class="s2"># Return: the features RR intervals</span>
+    <span class="s2">#   (pre_RR, post_RR, local_RR, global_RR)</span>
+    <span class="s2">#    for each beat</span>
+    <span class="s1">def </span><span class="s0">compute_RR_intervals(self, R_poses):</span>
+        <span class="s0">features_RR = RR_intervals()</span>
+
+        <span class="s0">pre_R = np.array([], dtype=int)</span>
+        <span class="s0">post_R = np.array([], dtype=int)</span>
+        <span class="s0">local_R = np.array([], dtype=int)</span>
+        <span class="s0">global_R = np.array([], dtype=int)</span>
+
+        <span class="s2"># Pre_R and Post_R</span>
+        <span class="s0">pre_R = np.append(pre_R, </span><span class="s3">0</span><span class="s0">)</span>
+        <span class="s0">post_R = np.append(post_R, R_poses[</span><span class="s3">1</span><span class="s0">] - R_poses[</span><span class="s3">0</span><span class="s0">])</span>
+
+        <span class="s1">for </span><span class="s0">i </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">1</span><span class="s0">, len(R_poses) - </span><span class="s3">1</span><span class="s0">):</span>
+            <span class="s0">pre_R = np.append(pre_R, R_poses[i] - R_poses[i - </span><span class="s3">1</span><span class="s0">])</span>
+            <span class="s0">post_R = np.append(post_R, R_poses[i + </span><span class="s3">1</span><span class="s0">] - R_poses[i])</span>
+
+        <span class="s0">pre_R[</span><span class="s3">0</span><span class="s0">] = pre_R[</span><span class="s3">1</span><span class="s0">]</span>
+        <span class="s0">pre_R = np.append(pre_R, R_poses[-</span><span class="s3">1</span><span class="s0">] - R_poses[-</span><span class="s3">2</span><span class="s0">])</span>
+
+        <span class="s0">post_R = np.append(post_R, post_R[-</span><span class="s3">1</span><span class="s0">])</span>
+
+        <span class="s2"># Local_R: AVG from last 10 pre_R values</span>
+        <span class="s1">for </span><span class="s0">i </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">0</span><span class="s0">, len(R_poses)):</span>
+            <span class="s0">num = </span><span class="s3">0</span>
+            <span class="s0">avg_val = </span><span class="s3">0</span>
+            <span class="s1">for </span><span class="s0">j </span><span class="s1">in </span><span class="s0">range(-</span><span class="s3">9</span><span class="s0">, </span><span class="s3">1</span><span class="s0">):</span>
+                <span class="s1">if </span><span class="s0">j + i &gt;= </span><span class="s3">0</span><span class="s0">:</span>
+                    <span class="s0">avg_val = avg_val + pre_R[i + j]</span>
+                    <span class="s0">num = num + </span><span class="s3">1</span>
+            <span class="s0">local_R = np.append(local_R, avg_val / float(num))</span>
+
+        <span class="s2"># Global R AVG: from full past-signal</span>
+        <span class="s2"># TODO: AVG from past 5 minutes = 108000 samples</span>
+        <span class="s0">global_R = np.append(global_R, pre_R[</span><span class="s3">0</span><span class="s0">])</span>
+        <span class="s1">for </span><span class="s0">i </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">1</span><span class="s0">, len(R_poses)):</span>
+            <span class="s0">num = </span><span class="s3">0</span>
+            <span class="s0">avg_val = </span><span class="s3">0</span>
+
+            <span class="s1">for </span><span class="s0">j </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">0</span><span class="s0">, i):</span>
+                <span class="s1">if </span><span class="s0">(R_poses[i] - R_poses[j]) &lt; </span><span class="s3">108000</span><span class="s0">:</span>
+                    <span class="s0">avg_val = avg_val + pre_R[j]</span>
+                    <span class="s0">num = num + </span><span class="s3">1</span>
+            <span class="s2"># num = i</span>
+            <span class="s0">global_R = np.append(global_R, avg_val / float(num))</span>
+
+        <span class="s1">for </span><span class="s0">i </span><span class="s1">in </span><span class="s0">range(</span><span class="s3">0</span><span class="s0">, len(R_poses)):</span>
+            <span class="s0">features_RR.pre_R = np.append(features_RR.pre_R, pre_R[i])</span>
+            <span class="s0">features_RR.post_R = np.append(features_RR.post_R, post_R[i])</span>
+            <span class="s0">features_RR.local_R = np.append(features_RR.local_R, local_R[i])</span>
+            <span class="s0">features_RR.global_R = np.append(features_RR.global_R, global_R[i])</span>
+
+            <span class="s2"># features_RR.append([pre_R[i], post_R[i], local_R[i], global_R[i]])</span>
+
+        <span class="s1">return </span><span class="s0">features_RR</span>
+
+
+
+
+
+</pre>
+</body>
+</html>
